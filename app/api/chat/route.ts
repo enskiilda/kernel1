@@ -20,8 +20,16 @@ export const revalidate = 0;
 import { parseTextToolCall } from './route_parser';
 
 // Streaming configuration constants
-const MIN_CHUNK_LENGTH = 10; // Minimum characters before sending a chunk
-const MAX_CHUNK_LENGTH = 150; // Maximum characters before forcing a chunk split
+// Enhanced regex to detect sentence boundaries - handles:
+// - Period, exclamation, question mark followed by space or end of string
+// - Handles quotes after punctuation: "Hello." or 'World!'
+// - Handles Polish punctuation and spacing
+const SENTENCE_BOUNDARY_REGEX = /[.!?]["']?\s+$/;
+
+// Helper function to remove !isfinish command from text
+function removeFinishCommand(text: string): string {
+  return text.replace(/!isfinish/gi, '').trim();
+}
 
 const INSTRUCTIONS = `Jesteś Operatorem - zaawansowanym asystentem AI, który może bezpośrednio kontrolować przeglądarkę chromium, aby wykonywać zadania użytkownika.
 
@@ -250,7 +258,7 @@ export async function POST(request: Request) {
                 currentTextChunk += delta.content;
                 
                 // Send text-delta for streaming display (filter out !isfinish)
-                const displayContent = delta.content.replace('!isfinish', '');
+                const displayContent = removeFinishCommand(delta.content);
                 if (displayContent) {
                   sendEvent({
                     type: "text-delta",
@@ -259,23 +267,20 @@ export async function POST(request: Request) {
                 }
                 
                 // Check if we should flush the current chunk as a separate message
-                // Flush on sentence boundaries or after significant chunks
-                const hasSentenceEnd = /[.!?]\s*$/.test(currentTextChunk.trim());
-                const isLongChunk = currentTextChunk.length > MAX_CHUNK_LENGTH;
+                // Flush on sentence boundaries to create separate messages
+                const trimmedChunk = currentTextChunk.trim();
+                const hasSentenceEnd = SENTENCE_BOUNDARY_REGEX.test(trimmedChunk);
                 
-                if ((hasSentenceEnd || isLongChunk) && currentTextChunk.trim().length > MIN_CHUNK_LENGTH) {
+                if (hasSentenceEnd && trimmedChunk) {
                   // Send current chunk as a complete text message (filter out !isfinish)
-                  const trimmedChunk = currentTextChunk.trim().replace('!isfinish', '').trim();
-                  if (trimmedChunk) {
+                  const cleanChunk = removeFinishCommand(trimmedChunk);
+                  if (cleanChunk) {
                     sendEvent({
                       type: "text-message",
-                      content: trimmedChunk,
+                      content: cleanChunk,
                     });
-                    currentTextChunk = "";
-                  } else {
-                    // If after filtering !isfinish there's nothing left, still reset chunk
-                    currentTextChunk = "";
                   }
+                  currentTextChunk = "";
                 }
               }
 
@@ -308,7 +313,7 @@ export async function POST(request: Request) {
           
           // Flush any remaining text chunk after streaming completes (filter out !isfinish)
           if (currentTextChunk.trim().length > 0) {
-            const cleanChunk = currentTextChunk.trim().replace('!isfinish', '').trim();
+            const cleanChunk = removeFinishCommand(currentTextChunk.trim());
             if (cleanChunk) {
               sendEvent({
                 type: "text-message",
@@ -728,8 +733,8 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
               // Check if AI wants to finish BEFORE adding to history
               if (wantsToFinish) {
                 
-                // Remove !isfinish from the text before sending
-                const cleanText = fullText.replace('!isfinish', '').trim();
+                // Remove !isfinish from the text before adding to history
+                const cleanText = removeFinishCommand(fullText);
                 
                 if (cleanText) {
                   chatHistory.push({
