@@ -20,16 +20,20 @@ export const revalidate = 0;
 import { parseTextToolCall } from './route_parser';
 
 // Streaming configuration constants
-// Enhanced regex to detect sentence boundaries - handles:
-// - Period, exclamation, question mark followed by space or end of string
-// - Handles quotes after punctuation: "Hello." or 'World!'
-// - Handles Polish punctuation and spacing
+const MIN_CHUNK_FOR_SENTENCE_CHECK = 5; // Minimum characters before checking for sentence boundaries (performance optimization)
+
+// Enhanced regex to detect sentence boundaries
+// Handles: period/exclamation/question mark + optional quotes + (whitespace OR end of string)
+// Examples: "Hello.", "World!", 'Test?', "Done." (with or without trailing space)
 const SENTENCE_BOUNDARY_REGEX = /[.!?]["']?(?:\s+|$)/;
 
 // Helper function to remove !isfinish command from text
 // Uses word boundary to avoid removing it from middle of legitimate text
-function removeFinishCommand(text: string): string {
-  return text.replace(/!isfinish\b/gi, '').trim();
+// Returns object with cleaned text and flag indicating if command was found
+function removeFinishCommand(text: string): { cleaned: string; hadCommand: boolean } {
+  const hadCommand = /!isfinish\b/i.test(text);
+  const cleaned = hadCommand ? text.replace(/!isfinish\b/gi, '').trim() : text;
+  return { cleaned, hadCommand };
 }
 
 const INSTRUCTIONS = `Jesteś Operatorem - zaawansowanym asystentem AI, który może bezpośrednio kontrolować przeglądarkę chromium, aby wykonywać zadania użytkownika.
@@ -259,10 +263,7 @@ export async function POST(request: Request) {
                 currentTextChunk += delta.content;
                 
                 // Send text-delta for streaming display (filter out !isfinish if present)
-                // Only apply expensive regex if command might be present
-                const displayContent = delta.content.includes('!isfinish') 
-                  ? removeFinishCommand(delta.content) 
-                  : delta.content;
+                const { cleaned: displayContent } = removeFinishCommand(delta.content);
                 if (displayContent) {
                   sendEvent({
                     type: "text-delta",
@@ -274,12 +275,10 @@ export async function POST(request: Request) {
                 // Flush on sentence boundaries to create separate messages
                 const trimmedChunk = currentTextChunk.trim();
                 
-                // Only check for sentence boundary if we have meaningful content (min 5 chars to avoid checking very short strings)
-                if (trimmedChunk.length > 5 && SENTENCE_BOUNDARY_REGEX.test(trimmedChunk)) {
+                // Only check for sentence boundary if we have meaningful content (performance optimization)
+                if (trimmedChunk.length > MIN_CHUNK_FOR_SENTENCE_CHECK && SENTENCE_BOUNDARY_REGEX.test(trimmedChunk)) {
                   // Send current chunk as a complete text message (filter out !isfinish if present)
-                  const cleanChunk = trimmedChunk.includes('!isfinish')
-                    ? removeFinishCommand(trimmedChunk)
-                    : trimmedChunk;
+                  const { cleaned: cleanChunk } = removeFinishCommand(trimmedChunk);
                   if (cleanChunk) {
                     sendEvent({
                       type: "text-message",
@@ -320,9 +319,7 @@ export async function POST(request: Request) {
           // Flush any remaining text chunk after streaming completes (filter out !isfinish if present)
           const remainingChunk = currentTextChunk.trim();
           if (remainingChunk.length > 0) {
-            const cleanChunk = remainingChunk.includes('!isfinish')
-              ? removeFinishCommand(remainingChunk)
-              : remainingChunk;
+            const { cleaned: cleanChunk } = removeFinishCommand(remainingChunk);
             if (cleanChunk) {
               sendEvent({
                 type: "text-message",
@@ -743,7 +740,7 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
               if (wantsToFinish) {
                 
                 // Remove !isfinish from the text before adding to history
-                const cleanText = removeFinishCommand(fullText);
+                const { cleaned: cleanText } = removeFinishCommand(fullText);
                 
                 if (cleanText) {
                   chatHistory.push({
