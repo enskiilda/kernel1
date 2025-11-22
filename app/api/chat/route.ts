@@ -235,7 +235,6 @@ export async function POST(request: Request) {
           let fullText = "";
           let toolCalls: any[] = [];
           let currentTextChunk = "";
-          let lastSentTime = Date.now();
 
           for await (const chunk of stream) {
             if (chunk.choices && chunk.choices.length > 0) {
@@ -246,29 +245,32 @@ export async function POST(request: Request) {
                 fullText += delta.content;
                 currentTextChunk += delta.content;
                 
-                // Send text-delta for streaming display
-                sendEvent({
-                  type: "text-delta",
-                  textDelta: delta.content,
-                });
+                // Send text-delta for streaming display (filter out !isfinish)
+                const displayContent = delta.content.replace('!isfinish', '');
+                if (displayContent) {
+                  sendEvent({
+                    type: "text-delta",
+                    textDelta: displayContent,
+                  });
+                }
                 
                 // Check if we should flush the current chunk as a separate message
                 // Flush on sentence boundaries or after significant chunks
-                const now = Date.now();
                 const hasSentenceEnd = /[.!?]\s*$/.test(currentTextChunk.trim());
                 const isLongChunk = currentTextChunk.length > 150;
-                const hasTimePassed = (now - lastSentTime) > 2000;
                 
                 if ((hasSentenceEnd || isLongChunk) && currentTextChunk.trim().length > 10) {
-                  // Send current chunk as a complete text message
-                  const trimmedChunk = currentTextChunk.trim();
+                  // Send current chunk as a complete text message (filter out !isfinish)
+                  const trimmedChunk = currentTextChunk.trim().replace('!isfinish', '').trim();
                   if (trimmedChunk) {
                     sendEvent({
                       type: "text-message",
                       content: trimmedChunk,
                     });
                     currentTextChunk = "";
-                    lastSentTime = now;
+                  } else {
+                    // If after filtering !isfinish there's nothing left, still reset chunk
+                    currentTextChunk = "";
                   }
                 }
               }
@@ -300,12 +302,15 @@ export async function POST(request: Request) {
             }
           }
           
-          // Flush any remaining text chunk after streaming completes
+          // Flush any remaining text chunk after streaming completes (filter out !isfinish)
           if (currentTextChunk.trim().length > 0) {
-            sendEvent({
-              type: "text-message",
-              content: currentTextChunk.trim(),
-            });
+            const cleanChunk = currentTextChunk.trim().replace('!isfinish', '').trim();
+            if (cleanChunk) {
+              sendEvent({
+                type: "text-message",
+                content: cleanChunk,
+              });
+            }
             currentTextChunk = "";
           }
           
