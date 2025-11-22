@@ -258,8 +258,11 @@ export async function POST(request: Request) {
                 fullText += delta.content;
                 currentTextChunk += delta.content;
                 
-                // Send text-delta for streaming display (filter out !isfinish)
-                const displayContent = removeFinishCommand(delta.content);
+                // Send text-delta for streaming display (filter out !isfinish if present)
+                // Only apply expensive regex if command might be present
+                const displayContent = delta.content.includes('!isfinish') 
+                  ? removeFinishCommand(delta.content) 
+                  : delta.content;
                 if (displayContent) {
                   sendEvent({
                     type: "text-delta",
@@ -271,10 +274,12 @@ export async function POST(request: Request) {
                 // Flush on sentence boundaries to create separate messages
                 const trimmedChunk = currentTextChunk.trim();
                 
-                // Only check for sentence boundary if we have meaningful content
-                if (trimmedChunk && SENTENCE_BOUNDARY_REGEX.test(trimmedChunk)) {
-                  // Send current chunk as a complete text message (filter out !isfinish)
-                  const cleanChunk = removeFinishCommand(trimmedChunk);
+                // Only check for sentence boundary if we have meaningful content (min 5 chars to avoid checking very short strings)
+                if (trimmedChunk.length > 5 && SENTENCE_BOUNDARY_REGEX.test(trimmedChunk)) {
+                  // Send current chunk as a complete text message (filter out !isfinish if present)
+                  const cleanChunk = trimmedChunk.includes('!isfinish')
+                    ? removeFinishCommand(trimmedChunk)
+                    : trimmedChunk;
                   if (cleanChunk) {
                     sendEvent({
                       type: "text-message",
@@ -312,9 +317,12 @@ export async function POST(request: Request) {
             }
           }
           
-          // Flush any remaining text chunk after streaming completes (filter out !isfinish)
-          if (currentTextChunk.trim().length > 0) {
-            const cleanChunk = removeFinishCommand(currentTextChunk.trim());
+          // Flush any remaining text chunk after streaming completes (filter out !isfinish if present)
+          const remainingChunk = currentTextChunk.trim();
+          if (remainingChunk.length > 0) {
+            const cleanChunk = remainingChunk.includes('!isfinish')
+              ? removeFinishCommand(remainingChunk)
+              : remainingChunk;
             if (cleanChunk) {
               sendEvent({
                 type: "text-message",
