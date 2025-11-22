@@ -24,11 +24,12 @@ import { parseTextToolCall } from './route_parser';
 // - Period, exclamation, question mark followed by space or end of string
 // - Handles quotes after punctuation: "Hello." or 'World!'
 // - Handles Polish punctuation and spacing
-const SENTENCE_BOUNDARY_REGEX = /[.!?]["']?\s+$/;
+const SENTENCE_BOUNDARY_REGEX = /[.!?]["']?(?:\s+|$)/;
 
 // Helper function to remove !isfinish command from text
+// Uses word boundary to avoid removing it from middle of legitimate text
 function removeFinishCommand(text: string): string {
-  return text.replace(/!isfinish/gi, '').trim();
+  return text.replace(/!isfinish\b/gi, '').trim();
 }
 
 const INSTRUCTIONS = `Jesteś Operatorem - zaawansowanym asystentem AI, który może bezpośrednio kontrolować przeglądarkę chromium, aby wykonywać zadania użytkownika.
@@ -269,9 +270,9 @@ export async function POST(request: Request) {
                 // Check if we should flush the current chunk as a separate message
                 // Flush on sentence boundaries to create separate messages
                 const trimmedChunk = currentTextChunk.trim();
-                const hasSentenceEnd = SENTENCE_BOUNDARY_REGEX.test(trimmedChunk);
                 
-                if (hasSentenceEnd && trimmedChunk) {
+                // Only check for sentence boundary if we have meaningful content
+                if (trimmedChunk && SENTENCE_BOUNDARY_REGEX.test(trimmedChunk)) {
                   // Send current chunk as a complete text message (filter out !isfinish)
                   const cleanChunk = removeFinishCommand(trimmedChunk);
                   if (cleanChunk) {
@@ -413,8 +414,8 @@ export async function POST(request: Request) {
             }
           }
 
-          // Check if AI wants to finish - look for !isfinish command
-          const wantsToFinish = fullText && fullText.includes('!isfinish');
+          // Check if AI wants to finish - look for !isfinish command (case-insensitive)
+          const wantsToFinish = fullText && /!isfinish\b/i.test(fullText);
 
           if (toolCalls.length > 0) {
             // AI is calling tools - EXECUTE ONLY FIRST ONE, then break loop
