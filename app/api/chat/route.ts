@@ -19,6 +19,23 @@ export const revalidate = 0;
 
 import { parseTextToolCall } from './route_parser';
 
+// Streaming configuration constants
+const MIN_CHUNK_FOR_SENTENCE_CHECK = 5; // Minimum characters before checking for sentence boundaries (performance optimization)
+
+// Enhanced regex to detect sentence boundaries
+// Handles: period/exclamation/question mark + optional quotes + (whitespace OR end of string)
+// Examples: "Hello.", "World!", 'Test?', "Done." (with or without trailing space)
+const SENTENCE_BOUNDARY_REGEX = /[.!?]["']?(?:\s+|$)/;
+
+// Helper function to remove !isfinish command from text
+// Uses word boundary to avoid removing it from middle of legitimate text
+// Returns object with cleaned text and flag indicating if command was found
+function removeFinishCommand(text: string): { cleaned: string; hadCommand: boolean } {
+  const hadCommand = /!isfinish\b/i.test(text);
+  const cleaned = hadCommand ? text.replace(/!isfinish\b/gi, '').trim() : text;
+  return { cleaned, hadCommand };
+}
+
 const INSTRUCTIONS = `Jesteś Operatorem - zaawansowanym asystentem AI, który może bezpośrednio kontrolować przeglądarkę chromium, aby wykonywać zadania użytkownika.
 
 🔴 KRYTYCZNIE WAŻNE - PRACA KROK PO KROKU:
@@ -74,7 +91,19 @@ Używaj przyjaznych sformułowań i naturalnego języka. Zamiast mówić jak aut
 Twój język ma być miękki, a narracja – płynna, oparta na teraźniejszości, swobodna.
 Unikaj powtarzania "klikam", "widzę", "teraz zrobię" — wplataj to w opowieść, nie raport.
 
-Absolutnie nigdy nie pisz tylko czysto techniczno, robotycznie - zawsze opowiadaj aktywnie uzytkownikowi, mow cos do uzytkownika, opisuj mu co bedziesz robic, opowiadaj nigdy nie mow czysto robotycznie prowadz tez rozmowe z uzytknownikiem i nie pisz tylko na temat tego co wyjonujesz ale prowadz rowniez aktywna i zaangazowana konwersacje, opowiafaj tez cos uzytkownikowi 
+Absolutnie nigdy nie pisz tylko czysto techniczno, robotycznie - zawsze opowiadaj aktywnie uzytkownikowi, mow cos do uzytkownika, opisuj mu co bedziesz robic, opowiadaj nigdy nie mow czysto robotycznie prowadz tez rozmowe z uzytknownikiem i nie pisz tylko na temat tego co wyjonujesz ale prowadz rowniez aktywna i zaangazowana konwersacje, opowiafaj tez cos uzytkownikowi.
+
+**WAŻNE O WIADOMOŚCIACH:**
+Możesz wysyłać wiele różnych wiadomości tekstowych podczas wykonywania zadania.
+Każda wiadomość tekstowa to osobny element, oddzielony od akcji computer_use.
+NIE łącz wielu myśli w jedną długą wiadomość - pisz krócej i częściej!
+Przykład dobrego podejścia:
+- "Dobra, zaraz sprawdzę co mamy na ekranie."
+- [akcja: screenshot]
+- "Widzę przeglądarkę. Teraz kliknę w pasek adresu."
+- [akcja: left_click]
+- "Super, pole jest aktywne. Wpiszę teraz adres."
+- [akcja: type]
 
 
 WAŻNE: JEŚLI WIDZISZ CZARNY EKRAN ZAWSZE ODCZEKAJ CHWILE AZ SIE DESKTOP ZANIM RUSZYSZ DALEJ - NIE MOZESZ BEZ TEGO ZACZAC TASKA 
@@ -151,7 +180,11 @@ Możesz klikać w KAŻDE miejsce na ekranie 0 0 do max_width-1 max_height-1
 Nie unikaj żadnych obszarów ekranu WSZYSTKO jest klikalne
 Jeśli widzisz element na screenshocie możesz w niego kliknąć BEZ ŻADNYCH WYJĄTKÓW
 
-Kiedy skończysz całe zadanie wyślij wiadomość zawierającą komendę !isfinish aby zakończyć pętlę`;
+**ZAKOŃCZENIE ZADANIA**
+Kiedy skończysz całe zadanie, w swojej ostatniej wiadomości tekstowej umieść komendę !isfinish aby zakończyć pętlę.
+WAŻNE: Komenda !isfinish musi być w osobnej wiadomości tekstowej, nie w akcji computer_use.
+Przykład: "Zakończyłem zadanie! Wszystko działa poprawnie. !isfinish"`;
+
 
 export async function POST(request: Request) {
   const { messages, sandboxId } = await request.json();
@@ -218,6 +251,7 @@ export async function POST(request: Request) {
 
           let fullText = "";
           let toolCalls: any[] = [];
+          let currentTextChunk = "";
 
           for await (const chunk of stream) {
             if (chunk.choices && chunk.choices.length > 0) {
@@ -226,10 +260,33 @@ export async function POST(request: Request) {
 
               if (delta.content) {
                 fullText += delta.content;
-                sendEvent({
-                  type: "text-delta",
-                  textDelta: delta.content,
-                });
+                currentTextChunk += delta.content;
+                
+                // Send text-delta for streaming display (filter out !isfinish if present)
+                const { cleaned: displayContent } = removeFinishCommand(delta.content);
+                if (displayContent) {
+                  sendEvent({
+                    type: "text-delta",
+                    textDelta: displayContent,
+                  });
+                }
+                
+                // Check if we should flush the current chunk as a separate message
+                // Flush on sentence boundaries to create separate messages
+                const trimmedChunk = currentTextChunk.trim();
+                
+                // Only check for sentence boundary if we have meaningful content (performance optimization)
+                if (trimmedChunk.length > MIN_CHUNK_FOR_SENTENCE_CHECK && SENTENCE_BOUNDARY_REGEX.test(trimmedChunk)) {
+                  // Send current chunk as a complete text message (filter out !isfinish if present)
+                  const { cleaned: cleanChunk } = removeFinishCommand(trimmedChunk);
+                  if (cleanChunk) {
+                    sendEvent({
+                      type: "text-message",
+                      content: cleanChunk,
+                    });
+                  }
+                  currentTextChunk = "";
+                }
               }
 
               // Handle tool calls - NVIDIA może zwracać w różnych formatach
@@ -257,6 +314,19 @@ export async function POST(request: Request) {
                 }
               }
             }
+          }
+          
+          // Flush any remaining text chunk after streaming completes (filter out !isfinish if present)
+          const remainingChunk = currentTextChunk.trim();
+          if (remainingChunk.length > 0) {
+            const { cleaned: cleanChunk } = removeFinishCommand(remainingChunk);
+            if (cleanChunk) {
+              sendEvent({
+                type: "text-message",
+                content: cleanChunk,
+              });
+            }
+            currentTextChunk = "";
           }
           
           // Filter out empty tool calls
@@ -349,8 +419,8 @@ export async function POST(request: Request) {
             }
           }
 
-          // Check if AI wants to finish - look for !isfinish command
-          const wantsToFinish = fullText && fullText.includes('!isfinish');
+          // Check if AI wants to finish - look for !isfinish command (case-insensitive)
+          const wantsToFinish = fullText && /!isfinish\b/i.test(fullText);
 
           if (toolCalls.length > 0) {
             // AI is calling tools - EXECUTE ONLY FIRST ONE, then break loop
@@ -360,16 +430,13 @@ export async function POST(request: Request) {
             if (textBeforeAction) {
               
               // Add text-only message to history
+              // Note: Text was already sent via text-message events during streaming
               chatHistory.push({
                 role: "assistant",
                 content: textBeforeAction,
               });
               
-              // Send as separate message
-              sendEvent({
-                type: "text-message",
-                content: textBeforeAction,
-              });
+              // NO need to send again - already sent as chunks during streaming
             }
             
             // Now prepare the tool call message
@@ -672,8 +739,8 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
               // Check if AI wants to finish BEFORE adding to history
               if (wantsToFinish) {
                 
-                // Remove !isfinish from the text before sending
-                const cleanText = fullText.replace('!isfinish', '').trim();
+                // Remove !isfinish from the text before adding to history
+                const { cleaned: cleanText } = removeFinishCommand(fullText);
                 
                 if (cleanText) {
                   chatHistory.push({
@@ -681,10 +748,8 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                     content: cleanText,
                   });
                   
-                  sendEvent({
-                    type: "text-delta",
-                    textDelta: cleanText,
-                  });
+                  // Text was already sent as chunks during streaming
+                  // NO need to send again
                 }
                 
                 // Send finish event
@@ -701,11 +766,8 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                 content: fullText,
               });
               
-              // Send as separate text message (not text-delta, so it appears as distinct message)
-              sendEvent({
-                type: "text-message",
-                content: fullText,
-              });
+              // Text was already sent as chunks during streaming via text-message events
+              // NO need to send again to avoid duplication
               
             }
             
