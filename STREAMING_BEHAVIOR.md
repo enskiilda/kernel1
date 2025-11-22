@@ -10,7 +10,8 @@ Text messages are now streamed as **multiple separate fragments** instead of one
 
 **How it works:**
 - The AI's text is streamed in real-time using `text-delta` events
-- When a sentence boundary is detected (`.`, `!`, `?`) or after 150 characters, the current chunk is sent as a complete `text-message` event
+- When a sentence boundary is detected (`.`, `!`, `?`) or after reaching the maximum chunk length (150 characters), the current chunk is sent as a complete `text-message` event
+- Minimum chunk length is 10 characters to avoid sending very short fragments
 - Each `text-message` event creates a **separate message bubble** in the UI
 - This allows the AI to send multiple short messages during task execution
 
@@ -60,7 +61,8 @@ AI: "Zakończyłem zadanie! Wszystko działa poprawnie. !isfinish"
 ### Backend (route.ts)
 - Streaming chunks are accumulated into `fullText` for AI context
 - `currentTextChunk` tracks text since last fragment send
-- Text is sent as `text-message` on sentence boundaries or long chunks
+- Text is sent as `text-message` on sentence boundaries or when exceeding MAX_CHUNK_LENGTH (150 chars)
+- Minimum chunk length of MIN_CHUNK_LENGTH (10 chars) prevents very short fragments
 - Final chunk is sent after streaming completes
 - Already-sent text is NOT re-sent to avoid duplication
 

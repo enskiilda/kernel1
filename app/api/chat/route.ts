@@ -19,6 +19,10 @@ export const revalidate = 0;
 
 import { parseTextToolCall } from './route_parser';
 
+// Streaming configuration constants
+const MIN_CHUNK_LENGTH = 10; // Minimum characters before sending a chunk
+const MAX_CHUNK_LENGTH = 150; // Maximum characters before forcing a chunk split
+
 const INSTRUCTIONS = `Jesteś Operatorem - zaawansowanym asystentem AI, który może bezpośrednio kontrolować przeglądarkę chromium, aby wykonywać zadania użytkownika.
 
 🔴 KRYTYCZNIE WAŻNE - PRACA KROK PO KROKU:
@@ -257,9 +261,9 @@ export async function POST(request: Request) {
                 // Check if we should flush the current chunk as a separate message
                 // Flush on sentence boundaries or after significant chunks
                 const hasSentenceEnd = /[.!?]\s*$/.test(currentTextChunk.trim());
-                const isLongChunk = currentTextChunk.length > 150;
+                const isLongChunk = currentTextChunk.length > MAX_CHUNK_LENGTH;
                 
-                if ((hasSentenceEnd || isLongChunk) && currentTextChunk.trim().length > 10) {
+                if ((hasSentenceEnd || isLongChunk) && currentTextChunk.trim().length > MIN_CHUNK_LENGTH) {
                   // Send current chunk as a complete text message (filter out !isfinish)
                   const trimmedChunk = currentTextChunk.trim().replace('!isfinish', '').trim();
                   if (trimmedChunk) {
